@@ -4,6 +4,7 @@ from io import BytesIO
 import fitz
 import streamlit as st
 
+from ollama_parser import OllamaParserError, repair_skipped_questions_with_ollama
 from quiz_parser import QuizQuestion, parse_questions
 
 
@@ -16,17 +17,31 @@ if uploaded_pdf is None:
     st.info("Upload a text-based PDF that includes each question, its choices, the correct answer, and an explanation.")
     st.stop()
 
+with st.sidebar:
+    parser_mode = st.selectbox(
+        "PDF parser",
+        ["Text parser", "Local AI repair (Ollama)"],
+        help="Local AI sends only incomplete question text to an Ollama model running on this computer.",
+    )
+    ollama_model = "qwen2.5:7b"
+    if parser_mode == "Local AI repair (Ollama)":
+        ollama_model = st.text_input("Ollama model", value=ollama_model).strip()
+
 pdf_bytes = uploaded_pdf.getvalue()
 pdf_id = hashlib.sha256(pdf_bytes).hexdigest()
-parser_version = 3
+parser_version = 4
+parser_config = (parser_mode, ollama_model)
 if (
     st.session_state.get("pdf_id") != pdf_id
     or st.session_state.get("parser_version") != parser_version
+    or st.session_state.get("parser_config") != parser_config
 ):
     st.session_state["pdf_id"] = pdf_id
     st.session_state["parser_version"] = parser_version
+    st.session_state["parser_config"] = parser_config
     st.session_state["questions"] = None
     st.session_state["warnings"] = []
+    st.session_state["ai_repaired_count"] = 0
     st.session_state["question_index"] = 0
     st.session_state["score"] = 0
     st.session_state["submitted"] = False
@@ -43,7 +58,37 @@ if st.session_state["questions"] is None:
         st.error("No selectable text was found. Scanned PDFs need OCR before they can be used.")
         st.stop()
 
-    result = parse_questions(pdf_text)
+    if parser_mode == "Local AI repair (Ollama)":
+        progress = st.progress(0, text="Checking for incomplete questions...")
+
+        def update_parse_progress(completed: int, total: int) -> None:
+            progress.progress(
+                completed / total,
+                text=f"Local AI repairing skipped questions ({completed}/{total})",
+            )
+
+        try:
+            with st.spinner("Parsing with the local Ollama model. This may take a while."):
+                ai_result = repair_skipped_questions_with_ollama(
+                    pdf_text,
+                    model=ollama_model or "qwen2.5:7b",
+                    progress_callback=update_parse_progress,
+                )
+        except OllamaParserError as error:
+            progress.empty()
+            st.error(str(error))
+            st.info(
+                f"Install Ollama, then run `ollama pull {ollama_model or 'qwen2.5:7b'}` "
+                "in PowerShell. "
+                "Keep Ollama running and upload the PDF again."
+            )
+            st.stop()
+        progress.empty()
+        result = ai_result.parse_result
+        st.session_state["ai_repaired_count"] = ai_result.repaired_count
+    else:
+        result = parse_questions(pdf_text)
+
     st.session_state["questions"] = result.questions
     st.session_state["warnings"] = result.warnings
     st.session_state["question_index"] = 0
@@ -51,6 +96,11 @@ if st.session_state["questions"] is None:
     st.session_state["submitted"] = False
 
 questions: list[QuizQuestion] = st.session_state["questions"]
+if st.session_state["ai_repaired_count"]:
+    st.info(
+        f"Local AI recovered {st.session_state['ai_repaired_count']} questions "
+        "that the text parser could not read."
+    )
 for warning in st.session_state["warnings"]:
     st.warning(warning)
 

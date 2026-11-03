@@ -17,6 +17,27 @@ python -m streamlit run app.py
 
 Open the local URL printed by Streamlit and upload your PDF.
 
+## Optional local AI parser
+
+The regular text parser runs without an AI model. To ask a local model to repair
+questions the text parser skips:
+
+1. Install [Ollama for Windows](https://ollama.com/download/windows).
+2. In PowerShell, download the default model:
+
+   ```powershell
+   ollama pull qwen2.5:7b
+   ```
+
+3. Keep Ollama running, start the quiz app, and choose **Local AI repair
+   (Ollama)** in the sidebar.
+
+The AI mode sends only skipped question text to the local Ollama server at
+`localhost:11434`; it does not send the PDF to a hosted AI service. It verifies
+that extracted correct-answer labels match the extracted choices and reports
+questions that remain unreadable. Model downloads require an internet connection,
+and parsing a large PDF can take a while on a CPU.
+
 ## Supported PDF format
 
 The app reads PDF text in visual reading order and expects selectable text

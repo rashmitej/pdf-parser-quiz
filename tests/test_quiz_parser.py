@@ -1,5 +1,11 @@
 import unittest
+import json
+from io import BytesIO
+from unittest.mock import patch
 
+from ollama_parser import (
+    repair_skipped_questions_with_ollama,
+)
 from quiz_parser import parse_questions
 
 
@@ -125,6 +131,102 @@ Correct Answer: A"""
 
         self.assertEqual(result.questions, [])
         self.assertTrue(any("No numbered questions" in warning for warning in result.warnings))
+
+    @patch("ollama_parser.urlopen")
+    def test_local_model_repairs_skipped_question_in_document_order(self, mock_urlopen) -> None:
+        model_question = {
+            "question_number": 2,
+            "prompt": "Choose the correct answer.",
+            "options": {"A": "First", "B": "Second"},
+            "correct_answers": ["B"],
+            "explanation": "The second choice is correct.",
+        }
+        mock_urlopen.return_value = BytesIO(
+            json.dumps(
+                {"message": {"content": json.dumps(model_question)}}
+            ).encode()
+        )
+        text = """
+        Question: 1
+        A complete question?
+        A. First
+        B. Second
+        Answer: A
+
+        Question: 2
+        Choose the correct answer.
+        A. First
+        Answer: B
+        """
+        progress: list[tuple[int, int]] = []
+
+        result = repair_skipped_questions_with_ollama(
+            text,
+            progress_callback=lambda completed, total: progress.append((completed, total)),
+        )
+
+        self.assertEqual(result.repaired_count, 1)
+        self.assertEqual([question.answers for question in result.parse_result.questions],
+                         [frozenset({"A"}), frozenset({"B"})])
+        self.assertEqual(result.parse_result.warnings, [])
+        self.assertEqual(progress, [(1, 1)])
+        request = mock_urlopen.call_args.args[0]
+        self.assertIn("localhost:11434/api/chat", request.full_url)
+
+    @patch("ollama_parser.urlopen")
+    def test_local_model_rejects_answer_label_not_in_options(self, mock_urlopen) -> None:
+        invalid_question = {
+            "question_number": 1,
+            "prompt": "Choose one.",
+            "options": {"A": "First", "B": "Second"},
+            "correct_answers": ["C"],
+            "explanation": "Explanation.",
+        }
+        mock_urlopen.return_value = BytesIO(
+            json.dumps(
+                {"message": {"content": json.dumps(invalid_question)}}
+            ).encode()
+        )
+
+        result = repair_skipped_questions_with_ollama(
+            """Question: 1
+            Choose one.
+            A. First
+            Answer: C""",
+        )
+
+        self.assertEqual(result.parse_result.questions, [])
+        self.assertTrue(
+            any("do not match the choices" in warning for warning in result.parse_result.warnings)
+        )
+
+    @patch("ollama_parser.urlopen")
+    def test_local_model_must_match_answer_key_in_pdf(self, mock_urlopen) -> None:
+        extracted_question = {
+            "question_number": 1,
+            "prompt": "Choose one.",
+            "options": {"A": "First", "B": "Second"},
+            "correct_answers": ["A"],
+            "explanation": "The first choice is correct.",
+        }
+        mock_urlopen.return_value = BytesIO(
+            json.dumps(
+                {"message": {"content": json.dumps(extracted_question)}}
+            ).encode()
+        )
+
+        result = repair_skipped_questions_with_ollama(
+            """Question: 1
+            Choose one.
+            A. First
+            Answer: B""",
+        )
+
+        self.assertEqual(result.parse_result.questions, [])
+        self.assertTrue(
+            any("does not match the answer key" in warning
+                for warning in result.parse_result.warnings)
+        )
 
 
 if __name__ == "__main__":
