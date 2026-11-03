@@ -17,6 +17,15 @@ python -m streamlit run app.py
 
 Open the local URL printed by Streamlit and upload your PDF.
 
+To stop the app, focus the PowerShell window where Streamlit is running and
+press **Ctrl+C**. Closing that terminal also stops the local server.
+
+The quiz keeps your answers in the local Streamlit session. Use **Back** and
+**Next question** to navigate, or **Skip** to mark a question for later. **Review
+answers** opens a summary grouped into correct, missed, skipped, and unanswered
+questions. Each question can be reopened and reattempted; the score reflects
+your latest attempt.
+
 ## Optional local AI parser
 
 The regular text parser runs without an AI model. To ask a local model to repair

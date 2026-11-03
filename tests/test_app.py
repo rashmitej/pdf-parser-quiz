@@ -6,6 +6,10 @@ from streamlit.testing.v1 import AppTest
 
 
 class QuizAppTests(unittest.TestCase):
+    def click_button(self, app: AppTest, label: str, occurrence: int = 0) -> None:
+        matching = [button for button in app.button if button.label == label]
+        matching[occurrence].click().run()
+
     def test_pdf_questions_are_read_in_visual_order(self) -> None:
         pdf = pymupdf.open()
         page = pdf.new_page()
@@ -105,6 +109,50 @@ Explanation: Beta matches the rule.""",
             any("Correct answer:** B — B. Beta" in item.value for item in app.markdown)
         )
         self.assertTrue(any("Beta matches the rule." in item.value for item in app.markdown))
+
+    def test_back_skip_review_and_reattempt(self) -> None:
+        pdf = pymupdf.open()
+        pdf.new_page().insert_textbox(
+            pymupdf.Rect(40, 40, 550, 750),
+            """Question 1: Which answer is correct?
+A) Alpha
+B) Beta
+Correct Answer: B
+Explanation: Beta is correct.
+
+Question 2: Which answer is correct?
+A) First
+B) Second
+Correct Answer: A
+Explanation: First is correct.""",
+        )
+        app_path = Path(__file__).resolve().parents[1] / "app.py"
+        app = AppTest.from_file(str(app_path)).run()
+        app.file_uploader[0].set_value(("quiz.pdf", pdf.tobytes(), "application/pdf")).run()
+
+        app.radio[0].set_value("A")
+        self.click_button(app, "Check answer")
+        self.assertEqual(app.session_state["question_states"][0]["status"], "missed")
+
+        self.click_button(app, "Next question")
+        self.assertEqual(app.session_state["question_index"], 1)
+        self.click_button(app, "Back")
+        self.assertEqual(app.session_state["question_index"], 0)
+        self.assertTrue(any(item.value == "Not quite." for item in app.error))
+
+        self.click_button(app, "Next question")
+        self.click_button(app, "Skip")
+        self.assertTrue(app.session_state["review_page"])
+        self.assertTrue(any("Missed (1)" in item.value for item in app.markdown))
+        self.assertTrue(any("Skipped (1)" in item.value for item in app.markdown))
+
+        self.click_button(app, "Reattempt this question")
+        self.assertEqual(app.session_state["question_index"], 0)
+        self.assertFalse(app.session_state["review_page"])
+        app.radio[0].set_value("B")
+        self.click_button(app, "Check answer")
+        self.assertEqual(app.session_state["question_states"][0]["status"], "correct")
+        self.assertEqual(app.session_state["score"], 1)
 
 
 if __name__ == "__main__":

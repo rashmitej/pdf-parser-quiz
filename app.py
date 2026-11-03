@@ -29,7 +29,7 @@ with st.sidebar:
 
 pdf_bytes = uploaded_pdf.getvalue()
 pdf_id = hashlib.sha256(pdf_bytes).hexdigest()
-parser_version = 4
+parser_version = 5
 parser_config = (parser_mode, ollama_model)
 if (
     st.session_state.get("pdf_id") != pdf_id
@@ -45,6 +45,8 @@ if (
     st.session_state["question_index"] = 0
     st.session_state["score"] = 0
     st.session_state["submitted"] = False
+    st.session_state["question_states"] = {}
+    st.session_state["review_page"] = False
 
 if st.session_state["questions"] is None:
     try:
@@ -94,6 +96,8 @@ if st.session_state["questions"] is None:
     st.session_state["question_index"] = 0
     st.session_state["score"] = 0
     st.session_state["submitted"] = False
+    st.session_state["question_states"] = {}
+    st.session_state["review_page"] = False
 
 questions: list[QuizQuestion] = st.session_state["questions"]
 if st.session_state["ai_repaired_count"]:
@@ -125,72 +129,155 @@ if not questions:
         )
     st.stop()
 
-index = st.session_state["question_index"]
-if index >= len(questions):
-    st.success(f"Quiz complete! Your score: {st.session_state['score']} / {len(questions)}")
-    if st.button("Start again"):
+question_states: dict[int, dict[str, object]] = st.session_state["question_states"]
+st.session_state["score"] = sum(
+    state.get("status") == "correct" for state in question_states.values()
+)
+
+if st.session_state["review_page"]:
+    all_reviewed = all(
+        question_states.get(index, {}).get("status") in ("correct", "missed", "skipped")
+        for index in range(len(questions))
+    )
+    review_message = f"Your score: {st.session_state['score']} / {len(questions)}"
+    if all_reviewed:
+        st.success(f"Quiz complete! {review_message}")
+    else:
+        st.info(f"Quiz review. {review_message}")
+    st.subheader("Review and reattempt")
+    st.write("Choose any question below to review it and try it again.")
+
+    review_groups = (
+        ("Correct", "correct"),
+        ("Missed", "missed"),
+        ("Skipped", "skipped"),
+        ("Not yet answered", "unanswered"),
+    )
+    for heading, status in review_groups:
+        matching = [
+            index
+            for index in range(len(questions))
+            if question_states.get(index, {}).get("status", "unanswered") == status
+        ]
+        if not matching:
+            continue
+        st.markdown(f"### {heading} ({len(matching)})")
+        for index in matching:
+            question = questions[index]
+            state = question_states.get(index, {})
+            with st.expander(f"Question {index + 1}: {question.prompt}"):
+                if state.get("status") in ("correct", "missed"):
+                    selected_labels = state.get("selected_labels", set())
+                    st.write(f"Your answer: {', '.join(sorted(selected_labels)) or 'None'}")
+                correct_labels = ", ".join(sorted(question.answers))
+                correct_text = "; ".join(
+                    f"{label}. {question.options[label]}"
+                    for label in sorted(question.answers)
+                )
+                st.markdown(f"**Correct answer:** {correct_labels} — {correct_text}")
+                st.markdown(
+                    f"**Explanation:** "
+                    f"{question.explanation or 'No explanation was provided in the PDF.'}"
+                )
+                if st.button("Reattempt this question", key=f"reattempt_{pdf_id}_{index}"):
+                    question_states.pop(index, None)
+                    attempts = st.session_state.setdefault("attempt_numbers", {})
+                    attempts[index] = attempts.get(index, 0) + 1
+                    st.session_state["question_index"] = index
+                    st.session_state["review_page"] = False
+                    st.rerun()
+
+    if st.button("Start quiz again"):
+        st.session_state["question_states"] = {}
+        st.session_state["attempt_numbers"] = {}
         st.session_state["question_index"] = 0
-        st.session_state["score"] = 0
-        st.session_state["submitted"] = False
+        st.session_state["review_page"] = False
         st.rerun()
     st.stop()
 
+index = st.session_state["question_index"]
 question = questions[index]
+state = question_states.get(index, {})
+attempt = st.session_state.setdefault("attempt_numbers", {}).get(index, 0)
 st.progress((index + 1) / len(questions), text=f"Question {index + 1} of {len(questions)}")
 st.subheader(question.prompt)
 
-with st.form(key=f"answer_form_{pdf_id}_{index}"):
-    if len(question.answers) == 1:
-        selected = st.radio(
-            "Choose one answer:",
-            options=list(question.options),
-            index=None,
-            format_func=lambda label: f"{label}. {question.options[label]}",
-            key=f"answer_{pdf_id}_{index}",
-        )
-    else:
-        st.write(f"Choose all {len(question.answers)} correct answers:")
-        selected = [
-            label
-            for label, option_text in question.options.items()
-            if st.checkbox(
-                f"{label}. {option_text}",
-                key=f"answer_{pdf_id}_{index}_{label}",
-            )
-        ]
-    submitted = st.form_submit_button("Check answer")
-
-if submitted and not st.session_state["submitted"]:
-    if isinstance(selected, str):
-        selected_labels = {selected}
-    else:
-        selected_labels = set(selected or [])
-    if not selected_labels:
-        st.warning("Choose at least one answer before checking.")
-    else:
-        st.session_state["selected_labels"] = selected_labels
-        st.session_state["is_correct"] = selected_labels == set(question.answers)
-        if st.session_state["is_correct"]:
-            st.session_state["score"] += 1
-        st.session_state["submitted"] = True
-
-if st.session_state["submitted"]:
-    if st.session_state["is_correct"]:
+if state.get("status") in ("correct", "missed"):
+    selected_labels = state.get("selected_labels", set())
+    if state["status"] == "correct":
         st.success("Correct!")
     else:
         st.error("Not quite.")
-
+    st.markdown(f"**Your answer:** {', '.join(sorted(selected_labels))}")
     correct_labels = ", ".join(sorted(question.answers))
     correct_text = "; ".join(
         f"{label}. {question.options[label]}" for label in sorted(question.answers)
     )
     st.markdown(f"**Correct answer:** {correct_labels} — {correct_text}")
     st.markdown(f"**Explanation:** {question.explanation or 'No explanation was provided in the PDF.'}")
+elif state.get("status") == "skipped":
+    st.info("This question was skipped. You can answer it now or continue.")
 
-    if st.button("Finish quiz" if index == len(questions) - 1 else "Next question"):
-        st.session_state["question_index"] += 1
-        st.session_state["submitted"] = False
-        st.rerun()
+if state.get("status") not in ("correct", "missed"):
+    with st.form(key=f"answer_form_{pdf_id}_{index}_{attempt}"):
+        if len(question.answers) == 1:
+            selected = st.radio(
+                "Choose one answer:",
+                options=list(question.options),
+                index=None,
+                format_func=lambda label: f"{label}. {question.options[label]}",
+                key=f"answer_{pdf_id}_{index}_{attempt}",
+            )
+        else:
+            st.write(f"Choose all {len(question.answers)} correct answers:")
+            selected = [
+                label
+                for label, option_text in question.options.items()
+                if st.checkbox(
+                    f"{label}. {option_text}",
+                    key=f"answer_{pdf_id}_{index}_{attempt}_{label}",
+                )
+            ]
+        submitted = st.form_submit_button("Check answer")
+
+    if submitted:
+        if isinstance(selected, str):
+            selected_labels = {selected}
+        else:
+            selected_labels = set(selected or [])
+        if not selected_labels:
+            st.warning("Choose at least one answer before checking.")
+        else:
+            is_correct = selected_labels == set(question.answers)
+            question_states[index] = {
+                "status": "correct" if is_correct else "missed",
+                "selected_labels": selected_labels,
+            }
+            st.session_state["score"] = sum(
+                item.get("status") == "correct" for item in question_states.values()
+            )
+            st.rerun()
+
+navigation = st.columns(4)
+if navigation[0].button("Back", disabled=index == 0):
+    st.session_state["question_index"] = index - 1
+    st.rerun()
+if navigation[1].button("Skip"):
+    if question_states.get(index, {}).get("status", "unanswered") in ("unanswered", "skipped"):
+        question_states[index] = {"status": "skipped", "selected_labels": set()}
+    if index == len(questions) - 1:
+        st.session_state["review_page"] = True
+    else:
+        st.session_state["question_index"] = index + 1
+    st.rerun()
+if navigation[2].button("Next question", disabled=index == len(questions) - 1):
+    if question_states.get(index, {}).get("status", "unanswered") == "unanswered":
+        question_states[index] = {"status": "skipped", "selected_labels": set()}
+    st.session_state["question_index"] = index + 1
+    st.rerun()
+if navigation[3].button("Review answers"):
+    st.session_state["review_page"] = True
+    st.rerun()
 
 with st.expander("About supported PDFs"):
     st.write(
